@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(del reorganize_files.py)",
+      "Bash(taskkill:*)",
+      "Bash(nul)",
+      "Bash(timeout /t 2)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

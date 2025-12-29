@@ -1,0 +1,10 @@
+E1
+SW1
+W1
+EC1
+N1
+SE1
+WC1
+NW1
+E2
+SW3
