@@ -280,5 +280,6 @@ def reset_job():
 
 
 if __name__ == '__main__':
-    host = os.environ.get('FLASK_HOST', 'localhost')
-    app.run(debug=True, host=host, port=5000)
+    host = os.environ.get('FLASK_HOST', '127.0.0.1')
+    port = int(os.environ.get('FLASK_PORT', 5001))
+    app.run(debug=True, host=host, port=port)
