@@ -4,6 +4,7 @@ Flask application for Street Signal - London Retail & Property Street Intelligen
 
 import csv
 import io
+import os
 import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -279,4 +280,5 @@ def reset_job():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    host = os.environ.get('FLASK_HOST', 'localhost')
+    app.run(debug=True, host=host, port=5000)
