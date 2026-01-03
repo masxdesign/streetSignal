@@ -4,8 +4,8 @@ Utility functions for geocoding, caching, and distance calculations.
 
 import json
 import math
-import os
 import re
+import sqlite3
 import time
 import requests
 from typing import Optional, Tuple, Dict, Any, List
@@ -24,43 +24,114 @@ nominatim_limiter = Limiter(Rate(1, Duration.SECOND * 2))  # 1 request per 2 sec
 overpass_limiter = Limiter(Rate(1, Duration.SECOND))       # 1 request per second
 
 
-class GeocodingCache:
-    """Persistent disk-based cache for geocoding results."""
+class GeocodeCache:
+    """SQLite-based cache for all geocoding results (districts and streets)."""
 
-    def __init__(self, cache_file: str = config.GEOCODE_CACHE_FILE):
-        self.cache_file = cache_file
-        self.cache = self._load_cache()
+    def __init__(self, db_file: str = "geocode_cache.sqlite"):
+        self.db_file = db_file
+        self._init_db()
 
-    def _load_cache(self) -> Dict[str, Any]:
-        """Load cache from disk."""
-        if os.path.exists(self.cache_file):
-            try:
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                return {}
-        return {}
+    def _init_db(self):
+        """Initialize the SQLite database with both tables."""
+        conn = sqlite3.connect(self.db_file)
+        # District cache (simple key -> lat/lon)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS district_cache (
+                district TEXT PRIMARY KEY,
+                lat REAL,
+                lon REAL,
+                updated_at INTEGER
+            )
+        """)
+        # Street cache (postcode+street -> lat/lon/area)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS street_cache (
+                key TEXT PRIMARY KEY,
+                lat REAL,
+                lon REAL,
+                area TEXT,
+                raw_json TEXT,
+                updated_at INTEGER
+            )
+        """)
+        conn.commit()
+        conn.close()
 
-    def _save_cache(self):
-        """Save cache to disk."""
-        try:
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(self.cache, f, indent=2)
-        except IOError as e:
-            print(f"Warning: Could not save cache: {e}")
+    # --- District cache methods ---
+    def get_district(self, district: str) -> Optional[Dict[str, float]]:
+        """Retrieve cached district geocoding result."""
+        conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "SELECT lat, lon FROM district_cache WHERE district = ?",
+            (district.upper().strip(),)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {'lat': row['lat'], 'lon': row['lon']}
+        return None
 
-    def get(self, key: str) -> Optional[Dict[str, Any]]:
-        """Retrieve cached geocoding result."""
-        return self.cache.get(key)
+    def set_district(self, district: str, lat: float, lon: float):
+        """Store district geocoding result in cache."""
+        conn = sqlite3.connect(self.db_file)
+        conn.execute("""
+            INSERT INTO district_cache (district, lat, lon, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(district) DO UPDATE SET
+                lat = excluded.lat,
+                lon = excluded.lon,
+                updated_at = excluded.updated_at
+        """, (district.upper().strip(), lat, lon, int(time.time() * 1000)))
+        conn.commit()
+        conn.close()
 
-    def set(self, key: str, value: Dict[str, Any]):
-        """Store geocoding result in cache."""
-        self.cache[key] = value
-        self._save_cache()
+    # --- Street cache methods ---
+    def _street_key(self, postcode: str, street: str) -> str:
+        """Generate cache key from postcode district and street."""
+        return f"{postcode.upper().strip()}|{street.lower().strip()}"
+
+    def get_street(self, postcode: str, street: str) -> Optional[Dict[str, Any]]:
+        """Retrieve cached street geocoding result."""
+        conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "SELECT lat, lon, area, raw_json FROM street_cache WHERE key = ?",
+            (self._street_key(postcode, street),)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return dict(row)
+        return None
+
+    def set_street(self, postcode: str, street: str, lat: Optional[float],
+                   lon: Optional[float], area: str, raw: Dict[str, Any]):
+        """Store street geocoding result in cache."""
+        conn = sqlite3.connect(self.db_file)
+        conn.execute("""
+            INSERT INTO street_cache (key, lat, lon, area, raw_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                lat = excluded.lat,
+                lon = excluded.lon,
+                area = excluded.area,
+                raw_json = excluded.raw_json,
+                updated_at = excluded.updated_at
+        """, (
+            self._street_key(postcode, street),
+            lat,
+            lon,
+            area,
+            json.dumps(raw),
+            int(time.time() * 1000)
+        ))
+        conn.commit()
+        conn.close()
 
 
-# Global cache instance
-geocode_cache = GeocodingCache()
+# Global cache instance (single SQLite file for all geocoding)
+geocode_cache = GeocodeCache()
 
 
 @retry(
@@ -82,7 +153,7 @@ def geocode_district(district: str) -> Optional[Tuple[float, float]]:
         Tuple of (latitude, longitude) or None if not found
     """
     # Check cache first
-    cached = geocode_cache.get(district)
+    cached = geocode_cache.get_district(district)
     if cached:
         return (cached['lat'], cached['lon'])
 
@@ -101,7 +172,7 @@ def geocode_district(district: str) -> Optional[Tuple[float, float]]:
                 lon = result['longitude']
 
                 # Cache result
-                geocode_cache.set(district, {'lat': lat, 'lon': lon})
+                geocode_cache.set_district(district, lat, lon)
 
                 return (lat, lon)
     except Exception as e:
@@ -158,7 +229,7 @@ def geocode_district(district: str) -> Optional[Tuple[float, float]]:
         lon = sum(lons) / len(lons)
 
         # Cache result
-        geocode_cache.set(district, {'lat': lat, 'lon': lon})
+        geocode_cache.set_district(district, lat, lon)
 
         return (lat, lon)
 
@@ -167,7 +238,7 @@ def geocode_district(district: str) -> Optional[Tuple[float, float]]:
     lon = float(results[0]['lon'])
 
     # Cache result
-    geocode_cache.set(district, {'lat': lat, 'lon': lon})
+    geocode_cache.set_district(district, lat, lon)
 
     return (lat, lon)
 
@@ -335,3 +406,152 @@ way["highway"]["name"](around:{radius_m},{lat},{lon});
 out tags center;
 """
     return query
+
+
+# ============================================================================
+# Street Geocoding with Area/Suburb Lookup
+# ============================================================================
+
+def _pick_area(address: Optional[Dict[str, Any]]) -> str:
+    """Extract the most relevant area/suburb from Nominatim address response."""
+    if not address:
+        return ""
+    return (
+        address.get("neighbourhood") or
+        address.get("suburb") or
+        address.get("city_district") or
+        address.get("borough") or
+        address.get("town") or
+        address.get("city") or
+        ""
+    )
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((requests.RequestException, requests.Timeout))
+)
+def geocode_street(postcode_district: str, street: str) -> Optional[Dict[str, Any]]:
+    """
+    Geocode a street within a postcode district using Nominatim.
+
+    Args:
+        postcode_district: Postcode district (e.g., "E1", "SW1")
+        street: Street name
+
+    Returns:
+        Dict with 'lat', 'lon', 'raw' or None if not found
+    """
+    nominatim_limiter.try_acquire("nominatim")
+
+    query = f"{street}, {postcode_district}, London, UK"
+    params = {
+        'q': query,
+        'format': 'jsonv2',
+        'limit': 1
+    }
+    headers = {'User-Agent': config.USER_AGENT}
+
+    response = requests.get(
+        f"{config.NOMINATIM_BASE_URL}/search",
+        params=params,
+        headers=headers,
+        timeout=config.NOMINATIM_TIMEOUT
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    if not data or len(data) == 0:
+        return None
+
+    return {
+        'lat': float(data[0]['lat']),
+        'lon': float(data[0]['lon']),
+        'raw': data[0]
+    }
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((requests.RequestException, requests.Timeout))
+)
+def reverse_geocode(lat: float, lon: float) -> Dict[str, Any]:
+    """
+    Reverse geocode coordinates to get address details including area/suburb.
+
+    Args:
+        lat: Latitude
+        lon: Longitude
+
+    Returns:
+        Dict with 'area' and 'raw' response
+    """
+    nominatim_limiter.try_acquire("nominatim")
+
+    params = {
+        'format': 'jsonv2',
+        'zoom': 16,
+        'addressdetails': 1,
+        'lat': lat,
+        'lon': lon
+    }
+    headers = {'User-Agent': config.USER_AGENT}
+
+    response = requests.get(
+        f"{config.NOMINATIM_BASE_URL}/reverse",
+        params=params,
+        headers=headers,
+        timeout=config.NOMINATIM_TIMEOUT
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    return {
+        'area': _pick_area(data.get('address')),
+        'raw': data
+    }
+
+
+def get_area_and_coords(postcode: str, street: str) -> Dict[str, Any]:
+    """
+    Get the area/suburb and coordinates for a street within a postcode district.
+
+    This is the main function to call - it handles caching automatically.
+
+    Args:
+        postcode: Postcode district (e.g., "E1", "SW1")
+        street: Street name
+
+    Returns:
+        Dict with 'area', 'lat', 'lon' keys
+    """
+    # Check cache first
+    cached = geocode_cache.get_street(postcode, street)
+    if cached and cached.get('lat') is not None and cached.get('lon') is not None:
+        return {
+            'area': cached.get('area') or '',
+            'lat': cached['lat'],
+            'lon': cached['lon']
+        }
+
+    # Geocode the street
+    geocode_result = geocode_street(postcode, street)
+    if not geocode_result:
+        geocode_cache.set_street(postcode, street, None, None, '', {'error': 'geocode_not_found'})
+        return {'area': '', 'lat': None, 'lon': None}
+
+    lat, lon = geocode_result['lat'], geocode_result['lon']
+
+    # Reverse geocode to get area/suburb
+    reverse_result = reverse_geocode(lat, lon)
+    area = reverse_result.get('area') or ''
+
+    # Cache the result
+    geocode_cache.set_street(postcode, street, lat, lon, area, {
+        'geocode': geocode_result['raw'],
+        'reverse': reverse_result['raw']
+    })
+
+    return {'area': area, 'lat': lat, 'lon': lon}
