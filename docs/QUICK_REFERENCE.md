@@ -17,7 +17,7 @@ run.bat
 python app.py
 ```
 
-**URL**: http://127.0.0.1:5000
+**URL**: http://127.0.0.1:5001
 
 ---
 
@@ -41,11 +41,14 @@ python app.py
 
 ```
 StreetSignal/
-├── app.py              - Flask app + endpoints + HTML template
+├── app.py              - Flask app entry point
 ├── processor.py        - POI extraction & street attribution
 ├── utils.py            - API wrappers, geocoding, distance calc
 ├── config.py           - Settings and presets
 ├── requirements.txt    - Python dependencies
+├── routes/             - Flask blueprints
+│   ├── jobs.py         - Job processing endpoints
+│   └── geocode.py      - Geocoding API endpoints
 │
 ├── README.md           - User documentation
 ├── DEPLOYMENT.md       - Deployment guide
@@ -81,6 +84,8 @@ Edit in [config.py](config.py)
 
 ## 🌐 API Endpoints
 
+### Job Processing (Web UI)
+
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/` | GET | Render main page |
@@ -88,6 +93,37 @@ Edit in [config.py](config.py)
 | `/step` | POST | Process 1 district |
 | `/download` | GET | Download CSV |
 | `/reset` | POST | Clear job |
+
+### Geocoding API
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/geocode/street` | GET/POST | Street → area + lat/lon |
+| `/api/geocode/district` | GET/POST | District → centroid lat/lon |
+| `/api/geocode/bulk` | POST | Bulk street geocoding (max 50) |
+
+#### Street Geocoding
+
+```bash
+# GET
+curl "http://127.0.0.1:5001/api/geocode/street?postcode=E1&street=Brick%20Lane"
+
+# POST
+curl -X POST http://127.0.0.1:5001/api/geocode/street \
+  -H "Content-Type: application/json" \
+  -d '{"postcode": "E1", "street": "Brick Lane"}'
+
+# Response
+{"postcode": "E1", "street": "Brick Lane", "area": "Spitalfields", "lat": 51.52, "lon": -0.07}
+```
+
+#### Bulk Geocoding
+
+```bash
+curl -X POST http://127.0.0.1:5001/api/geocode/bulk \
+  -H "Content-Type: application/json" \
+  -d '{"items": [{"postcode": "E1", "street": "Brick Lane"}]}'
+```
 
 ---
 
@@ -126,7 +162,7 @@ pip install -r requirements.txt
 ### Port already in use
 ```bash
 # Change port in app.py or kill existing process
-lsof -i :5000  # Find process
+lsof -i :5001  # Find process
 kill -9 <PID>  # Kill process
 ```
 
@@ -222,13 +258,13 @@ Before public deployment:
 
 ### Single-Process (Safe)
 ```bash
-gunicorn -w 1 -b 0.0.0.0:5000 app:app
+gunicorn -w 1 -b 0.0.0.0:5001 app:app
 ```
 
 ### Docker
 ```bash
 docker build -t streetsignal .
-docker run -p 5000:5000 streetsignal
+docker run -p 5001:5001 streetsignal
 ```
 
 **See [DEPLOYMENT.md](DEPLOYMENT.md) for full checklist.**
@@ -297,19 +333,21 @@ Before running:
 - [x] User-Agent updated
 - [x] Python 3.10+ available
 - [x] Internet connection active
-- [x] Port 5000 available
+- [x] Port 5001 available
 
 ---
 
 ## 🎯 Key Files to Know
 
-| File | Line | What |
-|------|------|------|
-| [config.py:15](config.py#L15) | 15 | User-Agent (MUST UPDATE) |
-| [config.py:22](config.py#L22) | 22-23 | Rate limits |
-| [config.py:28](config.py#L28) | 28-29 | Default parameters |
-| [config.py:33](config.py#L33) | 33 | Presets definition |
-| [app.py:305](app.py#L305) | 305 | Flask run configuration |
+| File | What |
+|------|------|
+| `config.py:18` | User-Agent (MUST UPDATE) |
+| `config.py:10-11` | Rate limits |
+| `config.py:25-26` | Default parameters |
+| `config.py:29` | Presets definition |
+| `routes/jobs.py` | Job processing endpoints |
+| `routes/geocode.py` | Geocoding API endpoints |
+| `utils.py` | GeocodeCache class + geocoding functions |
 
 ---
 
@@ -328,4 +366,4 @@ Before running:
 
 **Built with ❤️ and respect for OSM infrastructure**
 
-*Last updated: 2025-01-28*
+*Last updated: 2026-01-03*

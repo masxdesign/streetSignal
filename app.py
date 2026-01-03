@@ -5,12 +5,14 @@ Flask application for Street Signal - London Retail & Property Street Intelligen
 import os
 from flask import Flask
 from routes.jobs import jobs_bp
+from routes.geocode import geocode_bp
 
 
 app = Flask(__name__)
 
 # Register blueprints
 app.register_blueprint(jobs_bp)
+app.register_blueprint(geocode_bp)
 
 
 if __name__ == '__main__':
