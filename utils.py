@@ -10,7 +10,7 @@ import time
 import requests
 from typing import Optional, Tuple, Dict, Any, List
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from pyrate_limiter import Duration, Rate, Limiter
+from pyrate_limiter import Duration, Rate, Limiter, BucketFullException
 import config
 
 
@@ -22,6 +22,30 @@ _selector_re = re.compile(r"^[a-z0-9_]+=(\*|[a-z0-9_]+)$")
 # Rate limiters
 nominatim_limiter = Limiter(Rate(1, Duration.SECOND * 2))  # 1 request per 2 seconds
 overpass_limiter = Limiter(Rate(1, Duration.SECOND))       # 1 request per second
+
+
+def acquire_with_wait(limiter: Limiter, item: str, max_wait: float = 10.0) -> None:
+    """
+    Acquire rate limit slot, waiting if bucket is full instead of throwing.
+
+    Args:
+        limiter: The rate limiter instance
+        item: The item identifier for the bucket
+        max_wait: Maximum seconds to wait before giving up
+    """
+    wait_time = 0.5
+    total_waited = 0.0
+
+    while total_waited < max_wait:
+        try:
+            limiter.try_acquire(item)
+            return
+        except BucketFullException:
+            time.sleep(wait_time)
+            total_waited += wait_time
+
+    # Final attempt after max wait
+    limiter.try_acquire(item)
 
 
 class GeocodeCache:
@@ -180,7 +204,7 @@ def geocode_district(district: str) -> Optional[Tuple[float, float]]:
         print(f"postcodes.io failed for {district}: {e}")
 
     # Fallback to Nominatim if postcodes.io fails
-    nominatim_limiter.try_acquire("nominatim")
+    acquire_with_wait(nominatim_limiter, "nominatim")
 
     params = {
         'q': f"{district}, London, UK",
@@ -443,7 +467,7 @@ def geocode_street(postcode_district: str, street: str) -> Optional[Dict[str, An
     Returns:
         Dict with 'lat', 'lon', 'raw' or None if not found
     """
-    nominatim_limiter.try_acquire("nominatim")
+    acquire_with_wait(nominatim_limiter, "nominatim")
 
     query = f"{street}, {postcode_district}, London, UK"
     params = {
@@ -488,7 +512,7 @@ def reverse_geocode(lat: float, lon: float) -> Dict[str, Any]:
     Returns:
         Dict with 'area' and 'raw' response
     """
-    nominatim_limiter.try_acquire("nominatim")
+    acquire_with_wait(nominatim_limiter, "nominatim")
 
     params = {
         'format': 'jsonv2',
