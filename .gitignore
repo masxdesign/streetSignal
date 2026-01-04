@@ -11,3 +11,4 @@ geocode_cache.json
 http_cache.sqlite
 .DS_Store
 *.csv
+*.sqlite
